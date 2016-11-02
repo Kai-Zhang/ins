@@ -14,6 +14,7 @@ public:
     virtual std::string Value() const = 0;
     virtual bool Done() const = 0;
     virtual StructureIterator* Next() = 0;
+    virtual Status Error() const = 0;
 
     virtual ~StructureIterator() { }
 };

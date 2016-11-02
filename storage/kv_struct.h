@@ -11,7 +11,11 @@ namespace ins {
 /// iterator on the kv structure
 class KVIterator : public StructureIterator {
 public:
-    KVIterator(StorageManager::Iterator* it) : _it(it) { }
+    KVIterator(StorageManager::Iterator* it) : _it(it) {
+        if (!Done()) {
+            _key = GetOriginKey(_it->key());
+        }
+    }
     virtual ~KVIterator() { }
 
     virtual std::string Key() const {
@@ -23,15 +27,19 @@ public:
     }
 
     virtual bool Done() const {
-        return !_it->Valid();
+        return !_it->Valid() || _it->key()[0] != '.';
     }
 
     virtual StructureIterator* Next() {
         _it->Next();
-        if (_it->Valid()) {
+        if (!Done()) {
             _key = GetOriginKey(_it->key());
         }
         return this;
+    }
+
+    virtual Status Error() const {
+        return _it->status();
     }
 
 private:
@@ -79,6 +87,9 @@ public:
     virtual StructureIterator* List(const std::string& ns,
             const std::string& key) const {
         StorageManager::Iterator* it = _underlying->NewIterator(ns);
+        if (it == NULL) {
+            return NULL;
+        }
         return new KVIterator(it->Seek(GetStructuredKey(key)));
     }
 private:

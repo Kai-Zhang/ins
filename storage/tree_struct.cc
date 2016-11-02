@@ -38,6 +38,10 @@ public:
         return this;
     }
 
+    virtual Status Error() const {
+        return _it->status();
+    }
+
 private:
     /// returns the original key of a structured key in underlying storage
     std::string GetOriginKey(const std::string& structured) const {
@@ -97,6 +101,9 @@ Status TreeStructure::Delete(const std::string& ns, const std::string& key) {
 StructureIterator* TreeStructure::List(const std::string& ns,
         const std::string& key) const {
     StorageManager::Iterator* it = _underlying->NewIterator(ns);
+    if (it == NULL) {
+        return NULL;
+    }
     const std::string& list_key = GetListKey(key);
     return new TreeIterator(it->Seek(list_key), list_key);
 }

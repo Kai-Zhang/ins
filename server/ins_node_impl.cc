@@ -15,6 +15,8 @@
 #include "common/timer.h"
 #include "storage/meta.h"
 #include "storage/binlog.h"
+#include "storage/tree_struct.h"
+#include "storage/kv_struct.h"
 
 DECLARE_string(ins_data_dir);
 DECLARE_string(ins_binlog_dir);
@@ -231,6 +233,12 @@ void InsNodeImpl::CommitIndexObserv() {
             std::string new_uuid;
             bool lock_succ = true;
             Status log_status = kError;
+            BasicStructure* structure = NULL;
+            if (log_entry.key.length() == 0 || log_entry.key[0] != '/') {
+                structure = new KVStructure(data_store_);
+            } else {
+                structure = new TreeStructure(data_store_);
+            }
             switch(log_entry.op) {
                 case kPut:
                 case kLock:
@@ -239,10 +247,10 @@ void InsNodeImpl::CommitIndexObserv() {
                         log_entry.user.c_str());
                     type_and_value.append(1, static_cast<char>(log_entry.op));
                     type_and_value.append(log_entry.value);
-                    s = data_store_->Put(log_entry.user, log_entry.key, type_and_value);
+                    s = structure->Put(log_entry.user, log_entry.key, type_and_value);
                     if (s == kUnknownUser) {
                         if (data_store_->OpenDatabase(log_entry.user)) {
-                            s = data_store_->Put(log_entry.user, log_entry.key, type_and_value);
+                            s = structure->Put(log_entry.user, log_entry.key, type_and_value);
                         }
                     }
                     if (log_entry.op == kLock) {
@@ -264,13 +272,12 @@ void InsNodeImpl::CommitIndexObserv() {
                 case kDel:
                     LOG(INFO, "delete from data_store_, key: %s",
                         log_entry.key.c_str());
-                    s = data_store_->Delete(log_entry.user, log_entry.key);
+                    s = structure->Delete(log_entry.user, log_entry.key);
                     if (s == kUnknownUser) {
                         if (data_store_->OpenDatabase(log_entry.user)) {
-                            s = data_store_->Delete(log_entry.user, log_entry.key);
+                            s = structure->Delete(log_entry.user, log_entry.key);
                         }
                     }
-                    assert(s == kOk);
                     event_trigger_.AddTask(
                         boost::bind(&InsNodeImpl::TriggerEventWithParent,
                                     this,
@@ -295,16 +302,16 @@ void InsNodeImpl::CommitIndexObserv() {
                         const std::string& key = log_entry.key;
                         const std::string& old_session = log_entry.value;
                         std::string value;
-                        s = data_store_->Get(log_entry.user, key, &value);
+                        s = structure->Get(value, log_entry.user, key);
                         if (s == kOk) {
                             std::string cur_session;
                             LogOperation op;
                             ParseValue(value, op, cur_session);
                             if (op == kLock && cur_session == old_session) { //DeleteIf
-                                s = data_store_->Delete(log_entry.user, key);
+                                s = structure->Delete(log_entry.user, key);
                                 if (s == kUnknownUser) {
                                     if (data_store_->OpenDatabase(log_entry.user)) {
-                                       s = data_store_->Delete(log_entry.user, key); 
+                                       s = structure->Delete(log_entry.user, key); 
                                     }
                                 }
                                 assert(s == kOk);
@@ -339,6 +346,7 @@ void InsNodeImpl::CommitIndexObserv() {
                 default:
                     LOG(WARNING, "Unfamiliar op :%d", static_cast<int>(log_entry.op));
             }
+            delete structure;
             mu_.Lock();
             if (status_ == kLeader && nop_committed) {
                 in_safe_mode_ = false;
@@ -473,7 +481,14 @@ void InsNodeImpl::HeartBeatForReadCallback(
         LOG(DEBUG, "client get key: %s", key.c_str());
         Status s;
         std::string value;
-        s = data_store_->Get(user_manager_->GetUsernameFromUuid(uuid), key, &value);
+        BasicStructure* structure = NULL;
+        if (key.length() == 0 || key[0] != '/') {
+            structure = new KVStructure(data_store_);
+        } else {
+            structure = new TreeStructure(data_store_);
+        }
+        s = structure->Get(value, user_manager_->GetUsernameFromUuid(uuid), key);
+        delete structure;
         std::string real_value;
         LogOperation op;
         ParseValue(value, op, real_value);
@@ -1044,7 +1059,14 @@ void InsNodeImpl::Get(::google::protobuf::RpcController* controller,
         std::string key = request->key();
         Status s;
         std::string value;
-        s = data_store_->Get(user_manager_->GetUsernameFromUuid(uuid), key, &value);
+        BasicStructure* structure = NULL;
+        if (key.length() == 0 || key[0] != '/') {
+            structure = new KVStructure(data_store_);
+        } else {
+            structure = new TreeStructure(data_store_);
+        }
+        s = structure->Get(value, user_manager_->GetUsernameFromUuid(uuid), key);
+        delete structure;
         std::string real_value;
         LogOperation op;
         ParseValue(value, op, real_value);
@@ -1193,7 +1215,14 @@ bool InsNodeImpl::LockIsAvailable(const std::string& user,
     std::string old_locker_session;
     std::string value;
     LogOperation op;
-    s = data_store_->Get(user, key, &value);
+    BasicStructure* structure = NULL;
+    if (key.length() == 0 || key[0] != '/') {
+        structure = new KVStructure(data_store_);
+    } else {
+        structure = new TreeStructure(data_store_);
+    }
+    s = structure->Get(value, user, key);
+    delete structure;
     ParseValue(value, op, old_locker_session);
     bool lock_is_available = false;
     if (s != kOk) {
@@ -1289,7 +1318,14 @@ void InsNodeImpl::Lock(::google::protobuf::RpcController* controller,
         std::string type_and_value;
         type_and_value.append(1, static_cast<char>(kLock));
         type_and_value.append(session_id);
-        Status st = data_store_->Put(user, key, type_and_value);
+        BasicStructure* structure = NULL;
+        if (key.length() == 0 || key[0] != '/') {
+            structure = new KVStructure(data_store_);
+        } else {
+            structure = new TreeStructure(data_store_);
+        }
+        Status st = structure->Put(user, key, type_and_value);
+        delete structure;
         assert(st == kOk);
         binlogger_->AppendEntry(log_entry);
         int64_t cur_index = binlogger_->GetLength() - 1;
@@ -1361,10 +1397,17 @@ void InsNodeImpl::Scan(::google::protobuf::RpcController* controller,
     }
 
     const std::string& start_key = request->start_key();
-    const std::string& end_key = request->end_key();
+    std::string end_key = request->end_key();
     int32_t size_limit = request->size_limit();
-    StorageManager::Iterator* it = data_store_->NewIterator(
-            user_manager_->GetUsernameFromUuid(uuid));
+    BasicStructure* structure = NULL;
+    if (start_key.length() == 0 || start_key[0] != '/') {
+        structure = new KVStructure(data_store_);
+    } else {
+        structure = new TreeStructure(data_store_);
+        end_key = "";
+    }
+    StructureIterator* it = structure->List(
+            user_manager_->GetUsernameFromUuid(uuid), start_key);
     if (it == NULL) {
         response->set_uuid_expired(true);
         response->set_success(true);
@@ -1375,9 +1418,7 @@ void InsNodeImpl::Scan(::google::protobuf::RpcController* controller,
     bool has_more = false;
     int32_t count = 0;
     size_t pb_size = 0;
-    for (it->Seek(start_key);
-         it->Valid() && (it->key() < end_key || end_key.empty());
-         it->Next()) {
+    for (; !it->Done() && (it->Key() < end_key || end_key.empty()); it->Next()) {
         if (count > size_limit) {
             has_more = true;
             break;
@@ -1386,10 +1427,10 @@ void InsNodeImpl::Scan(::google::protobuf::RpcController* controller,
             has_more = true;
             break;
         }
-        if (it->key() == tag_last_applied_index) {
+        if (it->Key() == tag_last_applied_index) {
             continue;
         }
-        const std::string& value = it->value();
+        const std::string& value = it->Value();
         std::string real_value;
         LogOperation op;
         ParseValue(value, op, real_value);
@@ -1400,15 +1441,16 @@ void InsNodeImpl::Scan(::google::protobuf::RpcController* controller,
             }
         }
         galaxy::ins::ScanItem* item = response->add_items();
-        item->set_key(it->key());
+        item->set_key(it->Key());
         item->set_value(real_value);
-        pb_size += it->key().size();
+        pb_size += it->Key().size();
         pb_size += real_value.size();
         count ++;
     }
 
-    assert(it->status() == kOk);
+    assert(it->Error() == kOk);
     delete it;
+    delete structure;
     response->set_has_more(has_more);
     response->set_success(true);
     done->Run();
@@ -1643,7 +1685,14 @@ void InsNodeImpl::TouchParentKey(const std::string& user, const std::string& key
         std::string type_and_value;
         type_and_value.append(1, kPut);
         type_and_value.append(action + "," + changed_session);
-        data_store_->Put(user, parent_key, type_and_value);
+        BasicStructure* structure = NULL;
+        if (parent_key.length() == 0 || parent_key[0] != '/') {
+            structure = new KVStructure(data_store_);
+        } else {
+            structure = new TreeStructure(data_store_);
+        }
+        structure->Put(user, parent_key, type_and_value);
+        delete structure;
     }
 }
 
@@ -1816,7 +1865,14 @@ void InsNodeImpl::Watch(::google::protobuf::RpcController* controller,
     if (tm_now - server_start_timestamp_ > FLAGS_session_expire_timeout) {
         Status s;
         std::string raw_value;
-        s = data_store_->Get(user_manager_->GetUsernameFromUuid(uuid), key, &raw_value);
+        BasicStructure* structure = NULL;
+        if (key.length() == 0 || key[0] != '/') {
+            structure = new KVStructure(data_store_);
+        } else {
+            structure = new TreeStructure(data_store_);
+        }
+        s = structure->Get(raw_value, user_manager_->GetUsernameFromUuid(uuid), key);
+        delete structure;
         bool key_exist = (s == kOk);
         std::string real_value;
         LogOperation op;
